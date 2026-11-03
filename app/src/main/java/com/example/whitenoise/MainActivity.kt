@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,6 +24,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var playToggleButton: MaterialButton
     private lateinit var volumeSeekBar: SeekBar
+    private lateinit var noiseTypeRadioGroup: RadioGroup
+    private lateinit var radioWhite: RadioButton
+    private lateinit var radioPink: RadioButton
+    private lateinit var radioBrown: RadioButton
 
     private val requestNotificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -42,9 +48,24 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.statusText)
         playToggleButton = findViewById(R.id.playToggleButton)
         volumeSeekBar = findViewById(R.id.volumeSeekBar)
+        noiseTypeRadioGroup = findViewById(R.id.noiseTypeRadioGroup)
+        radioWhite = findViewById(R.id.radioWhite)
+        radioPink = findViewById(R.id.radioPink)
+        radioBrown = findViewById(R.id.radioBrown)
 
         playToggleButton.setOnClickListener {
             togglePlayback()
+        }
+
+        noiseTypeRadioGroup.setOnCheckedChangeListener { _, checkedId ->
+            val selectedType = when (checkedId) {
+                R.id.radioPink -> WhiteNoiseService.NoiseType.PINK
+                R.id.radioBrown -> WhiteNoiseService.NoiseType.BROWN
+                else -> WhiteNoiseService.NoiseType.WHITE
+            }
+            if (WhiteNoiseService.noiseTypeState.value != selectedType) {
+                WhiteNoiseService.setNoiseType(this, selectedType)
+            }
         }
 
         volumeSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -85,6 +106,16 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 launch {
+                    WhiteNoiseService.noiseTypeState.collect { noiseType ->
+                        when (noiseType) {
+                            WhiteNoiseService.NoiseType.WHITE -> radioWhite.isChecked = true
+                            WhiteNoiseService.NoiseType.PINK -> radioPink.isChecked = true
+                            WhiteNoiseService.NoiseType.BROWN -> radioBrown.isChecked = true
+                        }
+                        updateUiState(WhiteNoiseService.isPlayingState.value)
+                    }
+                }
+                launch {
                     WhiteNoiseService.volumeState.collect { volume ->
                         val progress = (volume * 100).toInt()
                         if (volumeSeekBar.progress != progress) {
@@ -97,8 +128,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUiState(isPlaying: Boolean) {
+        val noiseTypeName = WhiteNoiseService.noiseTypeState.value.displayName
         if (isPlaying) {
-            statusText.setText(R.string.status_playing)
+            statusText.text = getString(R.string.status_playing_format, noiseTypeName)
             playToggleButton.setText(R.string.action_stop)
         } else {
             statusText.setText(R.string.status_stopped)

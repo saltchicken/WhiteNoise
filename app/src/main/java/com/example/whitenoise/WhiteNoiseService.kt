@@ -28,6 +28,12 @@ import java.util.Random
 
 class WhiteNoiseService : Service() {
 
+    enum class NoiseType(val displayName: String) {
+        WHITE("White Noise"),
+        PINK("Pink Noise"),
+        BROWN("Brown Noise")
+    }
+
     private var audioTrack: AudioTrack? = null
     private var playbackJob: Job? = null
     private val serviceScope = CoroutineScope(Dispatchers.Default)
@@ -35,12 +41,26 @@ class WhiteNoiseService : Service() {
     private var audioManager: AudioManager? = null
     private var audioFocusRequest: AudioFocusRequest? = null
 
+    // Pink noise filter variables (Paul Kellet algorithm)
+    private var b0 = 0f
+    private var b1 = 0f
+    private var b2 = 0f
+    private var b3 = 0f
+    private var b4 = 0f
+    private var b5 = 0f
+    private var b6 = 0f
+
+    // Brown noise filter variable (Leaky integrator)
+    private var lastBrownSample = 0f
+
     companion object {
         const val ACTION_START = "com.example.whitenoise.ACTION_START"
         const val ACTION_STOP = "com.example.whitenoise.ACTION_STOP"
         const val ACTION_TOGGLE = "com.example.whitenoise.ACTION_TOGGLE"
         const val ACTION_SET_VOLUME = "com.example.whitenoise.ACTION_SET_VOLUME"
+        const val ACTION_SET_NOISE_TYPE = "com.example.whitenoise.ACTION_SET_NOISE_TYPE"
         const val EXTRA_VOLUME = "extra_volume"
+        const val EXTRA_NOISE_TYPE = "extra_noise_type"
 
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "white_noise_channel"
@@ -48,8 +68,11 @@ class WhiteNoiseService : Service() {
         private val _isPlayingState = MutableStateFlow(false)
         val isPlayingState: StateFlow<Boolean> = _isPlayingState.asStateFlow()
 
-        private val _volumeState = MutableStateFlow(0.5f)
+        private val _volumeState = MutableStateFlow(0.1f)
         val volumeState: StateFlow<Float> = _volumeState.asStateFlow()
+
+        private val _noiseTypeState = MutableStateFlow(NoiseType.PINK)
+        val noiseTypeState: StateFlow<NoiseType> = _noiseTypeState.asStateFlow()
 
         fun startService(context: Context) {
             val intent = Intent(context, WhiteNoiseService::class.java).apply {
@@ -73,6 +96,14 @@ class WhiteNoiseService : Service() {
             val intent = Intent(context, WhiteNoiseService::class.java).apply {
                 action = ACTION_SET_VOLUME
                 putExtra(EXTRA_VOLUME, volume)
+            }
+            context.startService(intent)
+        }
+
+        fun setNoiseType(context: Context, noiseType: NoiseType) {
+            val intent = Intent(context, WhiteNoiseService::class.java).apply {
+                action = ACTION_SET_NOISE_TYPE
+                putExtra(EXTRA_NOISE_TYPE, noiseType.name)
             }
             context.startService(intent)
         }
@@ -101,8 +132,30 @@ class WhiteNoiseService : Service() {
                 val vol = intent.getFloatExtra(EXTRA_VOLUME, _volumeState.value)
                 setVolumeInternal(vol)
             }
+            ACTION_SET_NOISE_TYPE -> {
+                val typeName = intent.getStringExtra(EXTRA_NOISE_TYPE)
+                val noiseType = NoiseType.entries.find { it.name == typeName } ?: NoiseType.WHITE
+                setNoiseTypeInternal(noiseType)
+            }
         }
         return START_STICKY
+    }
+
+    private fun setNoiseTypeInternal(noiseType: NoiseType) {
+        _noiseTypeState.value = noiseType
+        resetFilters()
+        updateNotification()
+    }
+
+    private fun resetFilters() {
+        b0 = 0f
+        b1 = 0f
+        b2 = 0f
+        b3 = 0f
+        b4 = 0f
+        b5 = 0f
+        b6 = 0f
+        lastBrownSample = 0f
     }
 
     private fun requestAudioFocus() {
@@ -116,7 +169,7 @@ class WhiteNoiseService : Service() {
                 .setAudioAttributes(audioAttributes)
                 .setAcceptsDelayedFocusGain(true)
                 .setOnAudioFocusChangeListener {
-                    // Intentionally ignore audio focus loss to keep playing white noise concurrently
+                    // Intentionally ignore audio focus loss to keep playing noise concurrently
                     // alongside other playing audio as requested.
                 }
                 .build()
@@ -126,7 +179,7 @@ class WhiteNoiseService : Service() {
             @Suppress("DEPRECATION")
             audioManager?.requestAudioFocus(
                 {
-                    // Intentionally ignore audio focus loss to keep playing white noise concurrently
+                    // Intentionally ignore audio focus loss to keep playing noise concurrently
                 },
                 AudioManager.STREAM_MUSIC,
                 AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
@@ -177,12 +230,37 @@ class WhiteNoiseService : Service() {
             val random = Random()
 
             while (_isPlayingState.value && (track.playState == AudioTrack.PLAYSTATE_PLAYING)) {
+                val currentNoiseType = _noiseTypeState.value
                 for (i in pcmBuffer.indices) {
-                    pcmBuffer[i] = (random.nextInt(65536) - 32768).toShort()
+                    val sampleFloat = when (currentNoiseType) {
+                        NoiseType.WHITE -> random.nextFloat() * 2f - 1f
+                        NoiseType.PINK -> generatePinkSample(random)
+                        NoiseType.BROWN -> generateBrownSample(random)
+                    }
+                    pcmBuffer[i] = (sampleFloat * 32767f).toInt().toShort()
                 }
                 track.write(pcmBuffer, 0, pcmBuffer.size)
             }
         }
+    }
+
+    private fun generatePinkSample(random: Random): Float {
+        val white = random.nextFloat() * 2f - 1f
+        b0 = 0.99886f * b0 + white * 0.0555179f
+        b1 = 0.99332f * b1 + white * 0.0750759f
+        b2 = 0.96900f * b2 + white * 0.1538520f
+        b3 = 0.86650f * b3 + white * 0.3104856f
+        b4 = 0.55000f * b4 + white * 0.5329522f
+        b5 = -0.7616f * b5 - white * 0.0168980f
+        val pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362f
+        b6 = white * 0.115926f
+        return (pink * 0.11f).coerceIn(-1.0f, 1.0f)
+    }
+
+    private fun generateBrownSample(random: Random): Float {
+        val white = random.nextFloat() * 2f - 1f
+        lastBrownSample = (lastBrownSample + (0.02f * white)) / 1.02f
+        return (lastBrownSample * 3.5f).coerceIn(-1.0f, 1.0f)
     }
 
     private fun setVolumeInternal(vol: Float) {
@@ -239,6 +317,13 @@ class WhiteNoiseService : Service() {
         }
     }
 
+    private fun updateNotification() {
+        if (_isPlayingState.value) {
+            val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(NOTIFICATION_ID, buildNotification())
+        }
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -254,6 +339,7 @@ class WhiteNoiseService : Service() {
     }
 
     private fun buildNotification(): Notification {
+        val noiseTypeName = _noiseTypeState.value.displayName
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -275,8 +361,8 @@ class WhiteNoiseService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("White Noise Generator")
-            .setContentText("White noise playing in background")
+            .setContentTitle(noiseTypeName)
+            .setContentText("$noiseTypeName playing in background")
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(contentPendingIntent)
             .setOngoing(true)
