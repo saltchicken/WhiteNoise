@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">WhiteNoise</string>
+    <string name="title_white_noise">White Noise Generator</string>
+    <string name="subtitle_white_noise">Continuous Background Audio</string>
+    <string name="status_stopped">Status: Stopped</string>
+    <string name="status_playing">Status: Playing</string>
+    <string name="action_start">Start White Noise</string>
+    <string name="action_stop">Stop White Noise</string>
+    <string name="label_volume">Volume</string>
+    <string name="info_background_play">✓ Plays continuously in background when app is minimized</string>
+    <string name="info_concurrent_play">✓ Plays concurrently alongside other audio &amp; media apps</string>
+</resources>
