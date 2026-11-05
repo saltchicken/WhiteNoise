@@ -35,6 +35,9 @@ class WhiteNoiseService : Service() {
     private var audioManager: AudioManager? = null
     private var audioFocusRequest: AudioFocusRequest? = null
 
+    // Blue noise state
+    private var lastWhiteSample = 0f
+
     // Pink noise filter variables (Paul Kellet algorithm)
     private var b0 = 0f
     private var b1 = 0f
@@ -46,6 +49,9 @@ class WhiteNoiseService : Service() {
 
     // Brown noise filter variable (Leaky integrator)
     private var lastBrownSample = 0f
+
+    // Deep Red noise filter variable (Second leaky integrator)
+    private var lastDeepRedSample = 0f
 
     companion object {
         const val ACTION_START = "com.example.whitenoise.ACTION_START"
@@ -65,7 +71,7 @@ class WhiteNoiseService : Service() {
         private val _volumeState = MutableStateFlow(0.1f)
         val volumeState: StateFlow<Float> = _volumeState.asStateFlow()
 
-        // 0.0f = White Noise, 0.5f = Pink Noise, 1.0f = Brown Noise
+        // 0.0f = Blue, 0.25f = White, 0.5f = Pink (Default), 0.75f = Brown, 1.0f = Deep Red
         private val _noiseColorState = MutableStateFlow(0.5f)
         val noiseColorState: StateFlow<Float> = _noiseColorState.asStateFlow()
 
@@ -105,11 +111,15 @@ class WhiteNoiseService : Service() {
 
         fun getNoiseColorName(context: Context, color: Float): String {
             return when {
-                color < 0.15f -> context.getString(R.string.noise_color_white)
-                color < 0.40f -> context.getString(R.string.noise_color_white_pink)
-                color <= 0.60f -> context.getString(R.string.noise_color_pink)
-                color < 0.85f -> context.getString(R.string.noise_color_pink_brown)
-                else -> context.getString(R.string.noise_color_brown)
+                color < 0.10f -> context.getString(R.string.noise_color_blue)
+                color < 0.20f -> context.getString(R.string.noise_color_blue_white)
+                color < 0.30f -> context.getString(R.string.noise_color_white)
+                color < 0.45f -> context.getString(R.string.noise_color_white_pink)
+                color <= 0.55f -> context.getString(R.string.noise_color_pink)
+                color < 0.70f -> context.getString(R.string.noise_color_pink_brown)
+                color < 0.80f -> context.getString(R.string.noise_color_brown)
+                color < 0.90f -> context.getString(R.string.noise_color_brown_deep_red)
+                else -> context.getString(R.string.noise_color_deep_red)
             }
         }
     }
@@ -225,15 +235,29 @@ class WhiteNoiseService : Service() {
                 val t = _noiseColorState.value
                 for (i in pcmBuffer.indices) {
                     val whiteSample = random.nextFloat() * 2f - 1f
+
+                    val blueSample = generateBlueSample(whiteSample)
                     val pinkSample = generatePinkSample(whiteSample)
                     val brownSample = generateBrownSample(whiteSample)
+                    val deepRedSample = generateDeepRedSample(brownSample)
 
-                    val sampleFloat = if (t <= 0.5f) {
-                        val factor = t * 2.0f
-                        (1.0f - factor) * whiteSample + factor * pinkSample
-                    } else {
-                        val factor = (t - 0.5f) * 2.0f
-                        (1.0f - factor) * pinkSample + factor * brownSample
+                    val sampleFloat = when {
+                        t < 0.25f -> {
+                            val factor = t / 0.25f
+                            (1.0f - factor) * blueSample + factor * whiteSample
+                        }
+                        t < 0.50f -> {
+                            val factor = (t - 0.25f) / 0.25f
+                            (1.0f - factor) * whiteSample + factor * pinkSample
+                        }
+                        t < 0.75f -> {
+                            val factor = (t - 0.50f) / 0.25f
+                            (1.0f - factor) * pinkSample + factor * brownSample
+                        }
+                        else -> {
+                            val factor = (t - 0.75f) / 0.25f
+                            (1.0f - factor) * brownSample + factor * deepRedSample
+                        }
                     }
 
                     pcmBuffer[i] = (sampleFloat * 32767f).toInt().toShort()
@@ -241,6 +265,12 @@ class WhiteNoiseService : Service() {
                 track.write(pcmBuffer, 0, pcmBuffer.size)
             }
         }
+    }
+
+    private fun generateBlueSample(white: Float): Float {
+        val rawBlue = white - lastWhiteSample
+        lastWhiteSample = white
+        return (rawBlue * 0.5f).coerceIn(-1.0f, 1.0f)
     }
 
     private fun generatePinkSample(white: Float): Float {
@@ -258,6 +288,11 @@ class WhiteNoiseService : Service() {
     private fun generateBrownSample(white: Float): Float {
         lastBrownSample = (lastBrownSample + (0.02f * white)) / 1.02f
         return (lastBrownSample * 3.5f).coerceIn(-1.0f, 1.0f)
+    }
+
+    private fun generateDeepRedSample(brown: Float): Float {
+        lastDeepRedSample = (lastDeepRedSample + (0.015f * brown)) / 1.015f
+        return (lastDeepRedSample * 4.0f).coerceIn(-1.0f, 1.0f)
     }
 
     private fun setVolumeInternal(vol: Float) {
