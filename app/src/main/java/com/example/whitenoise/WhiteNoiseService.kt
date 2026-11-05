@@ -28,12 +28,6 @@ import java.util.Random
 
 class WhiteNoiseService : Service() {
 
-    enum class NoiseType(val displayName: String) {
-        WHITE("White Noise"),
-        PINK("Pink Noise"),
-        BROWN("Brown Noise")
-    }
-
     private var audioTrack: AudioTrack? = null
     private var playbackJob: Job? = null
     private val serviceScope = CoroutineScope(Dispatchers.Default)
@@ -58,9 +52,9 @@ class WhiteNoiseService : Service() {
         const val ACTION_STOP = "com.example.whitenoise.ACTION_STOP"
         const val ACTION_TOGGLE = "com.example.whitenoise.ACTION_TOGGLE"
         const val ACTION_SET_VOLUME = "com.example.whitenoise.ACTION_SET_VOLUME"
-        const val ACTION_SET_NOISE_TYPE = "com.example.whitenoise.ACTION_SET_NOISE_TYPE"
+        const val ACTION_SET_NOISE_COLOR = "com.example.whitenoise.ACTION_SET_NOISE_COLOR"
         const val EXTRA_VOLUME = "extra_volume"
-        const val EXTRA_NOISE_TYPE = "extra_noise_type"
+        const val EXTRA_NOISE_COLOR = "extra_noise_color"
 
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "white_noise_channel"
@@ -71,8 +65,9 @@ class WhiteNoiseService : Service() {
         private val _volumeState = MutableStateFlow(0.1f)
         val volumeState: StateFlow<Float> = _volumeState.asStateFlow()
 
-        private val _noiseTypeState = MutableStateFlow(NoiseType.PINK)
-        val noiseTypeState: StateFlow<NoiseType> = _noiseTypeState.asStateFlow()
+        // 0.0f = White Noise, 0.5f = Pink Noise, 1.0f = Brown Noise
+        private val _noiseColorState = MutableStateFlow(0.5f)
+        val noiseColorState: StateFlow<Float> = _noiseColorState.asStateFlow()
 
         fun startService(context: Context) {
             val intent = Intent(context, WhiteNoiseService::class.java).apply {
@@ -100,12 +95,22 @@ class WhiteNoiseService : Service() {
             context.startService(intent)
         }
 
-        fun setNoiseType(context: Context, noiseType: NoiseType) {
+        fun setNoiseColor(context: Context, color: Float) {
             val intent = Intent(context, WhiteNoiseService::class.java).apply {
-                action = ACTION_SET_NOISE_TYPE
-                putExtra(EXTRA_NOISE_TYPE, noiseType.name)
+                action = ACTION_SET_NOISE_COLOR
+                putExtra(EXTRA_NOISE_COLOR, color)
             }
             context.startService(intent)
+        }
+
+        fun getNoiseColorName(context: Context, color: Float): String {
+            return when {
+                color < 0.15f -> context.getString(R.string.noise_color_white)
+                color < 0.40f -> context.getString(R.string.noise_color_white_pink)
+                color <= 0.60f -> context.getString(R.string.noise_color_pink)
+                color < 0.85f -> context.getString(R.string.noise_color_pink_brown)
+                else -> context.getString(R.string.noise_color_brown)
+            }
         }
     }
 
@@ -132,30 +137,17 @@ class WhiteNoiseService : Service() {
                 val vol = intent.getFloatExtra(EXTRA_VOLUME, _volumeState.value)
                 setVolumeInternal(vol)
             }
-            ACTION_SET_NOISE_TYPE -> {
-                val typeName = intent.getStringExtra(EXTRA_NOISE_TYPE)
-                val noiseType = NoiseType.entries.find { it.name == typeName } ?: NoiseType.WHITE
-                setNoiseTypeInternal(noiseType)
+            ACTION_SET_NOISE_COLOR -> {
+                val color = intent.getFloatExtra(EXTRA_NOISE_COLOR, _noiseColorState.value)
+                setNoiseColorInternal(color)
             }
         }
         return START_STICKY
     }
 
-    private fun setNoiseTypeInternal(noiseType: NoiseType) {
-        _noiseTypeState.value = noiseType
-        resetFilters()
+    private fun setNoiseColorInternal(color: Float) {
+        _noiseColorState.value = color.coerceIn(0.0f, 1.0f)
         updateNotification()
-    }
-
-    private fun resetFilters() {
-        b0 = 0f
-        b1 = 0f
-        b2 = 0f
-        b3 = 0f
-        b4 = 0f
-        b5 = 0f
-        b6 = 0f
-        lastBrownSample = 0f
     }
 
     private fun requestAudioFocus() {
@@ -230,13 +222,20 @@ class WhiteNoiseService : Service() {
             val random = Random()
 
             while (_isPlayingState.value && (track.playState == AudioTrack.PLAYSTATE_PLAYING)) {
-                val currentNoiseType = _noiseTypeState.value
+                val t = _noiseColorState.value
                 for (i in pcmBuffer.indices) {
-                    val sampleFloat = when (currentNoiseType) {
-                        NoiseType.WHITE -> random.nextFloat() * 2f - 1f
-                        NoiseType.PINK -> generatePinkSample(random)
-                        NoiseType.BROWN -> generateBrownSample(random)
+                    val whiteSample = random.nextFloat() * 2f - 1f
+                    val pinkSample = generatePinkSample(whiteSample)
+                    val brownSample = generateBrownSample(whiteSample)
+
+                    val sampleFloat = if (t <= 0.5f) {
+                        val factor = t * 2.0f
+                        (1.0f - factor) * whiteSample + factor * pinkSample
+                    } else {
+                        val factor = (t - 0.5f) * 2.0f
+                        (1.0f - factor) * pinkSample + factor * brownSample
                     }
+
                     pcmBuffer[i] = (sampleFloat * 32767f).toInt().toShort()
                 }
                 track.write(pcmBuffer, 0, pcmBuffer.size)
@@ -244,8 +243,7 @@ class WhiteNoiseService : Service() {
         }
     }
 
-    private fun generatePinkSample(random: Random): Float {
-        val white = random.nextFloat() * 2f - 1f
+    private fun generatePinkSample(white: Float): Float {
         b0 = 0.99886f * b0 + white * 0.0555179f
         b1 = 0.99332f * b1 + white * 0.0750759f
         b2 = 0.96900f * b2 + white * 0.1538520f
@@ -257,8 +255,7 @@ class WhiteNoiseService : Service() {
         return (pink * 0.11f).coerceIn(-1.0f, 1.0f)
     }
 
-    private fun generateBrownSample(random: Random): Float {
-        val white = random.nextFloat() * 2f - 1f
+    private fun generateBrownSample(white: Float): Float {
         lastBrownSample = (lastBrownSample + (0.02f * white)) / 1.02f
         return (lastBrownSample * 3.5f).coerceIn(-1.0f, 1.0f)
     }
@@ -333,13 +330,13 @@ class WhiteNoiseService : Service() {
             ).apply {
                 description = "Notification for background white noise playback"
             }
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(channel)
         }
     }
 
     private fun buildNotification(): Notification {
-        val noiseTypeName = _noiseTypeState.value.displayName
+        val colorName = getNoiseColorName(this, _noiseColorState.value)
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -361,8 +358,8 @@ class WhiteNoiseService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(noiseTypeName)
-            .setContentText("$noiseTypeName playing in background")
+            .setContentTitle(colorName)
+            .setContentText("$colorName playing in background")
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(contentPendingIntent)
             .setOngoing(true)
