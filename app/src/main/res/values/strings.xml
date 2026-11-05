@@ -4,9 +4,14 @@
     <string name="subtitle_white_noise">Continuous Background Audio</string>
     <string name="status_stopped">Status: Stopped</string>
     <string name="status_playing_format">Status: Playing (%1$s)</string>
+    <string name="status_playing_oscillation_format">Status: Playing (Wave %1$d%% - %2$d%%)</string>
     <string name="action_start">Start Audio</string>
     <string name="action_stop">Stop Audio</string>
     <string name="label_noise_color_format">Noise Color: %1$s</string>
+    <string name="title_oscillation">Spectrum Oscillation (Wave Mode)</string>
+    <string name="label_oscillation_enable">Enable Oscillation</string>
+    <string name="label_oscillation_range_format">Range: %1$d%% (%2$s) ── %3$d%% (%4$s)</string>
+    <string name="label_oscillation_speed_format">Cycle Speed: %1$d sec</string>
     <string name="noise_type_blue">Blue</string>
     <string name="noise_type_white">White</string>
     <string name="noise_type_pink">Pink</string>

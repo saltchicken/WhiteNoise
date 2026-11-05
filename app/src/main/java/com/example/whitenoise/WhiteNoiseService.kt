@@ -59,8 +59,16 @@ class WhiteNoiseService : Service() {
         const val ACTION_TOGGLE = "com.example.whitenoise.ACTION_TOGGLE"
         const val ACTION_SET_VOLUME = "com.example.whitenoise.ACTION_SET_VOLUME"
         const val ACTION_SET_NOISE_COLOR = "com.example.whitenoise.ACTION_SET_NOISE_COLOR"
+        const val ACTION_SET_OSCILLATION_ENABLED = "com.example.whitenoise.ACTION_SET_OSCILLATION_ENABLED"
+        const val ACTION_SET_OSCILLATION_RANGE = "com.example.whitenoise.ACTION_SET_OSCILLATION_RANGE"
+        const val ACTION_SET_OSCILLATION_SPEED = "com.example.whitenoise.ACTION_SET_OSCILLATION_SPEED"
+
         const val EXTRA_VOLUME = "extra_volume"
         const val EXTRA_NOISE_COLOR = "extra_noise_color"
+        const val EXTRA_OSCILLATION_ENABLED = "extra_oscillation_enabled"
+        const val EXTRA_OSCILLATION_MIN = "extra_oscillation_min"
+        const val EXTRA_OSCILLATION_MAX = "extra_oscillation_max"
+        const val EXTRA_OSCILLATION_SPEED = "extra_oscillation_speed"
 
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "white_noise_channel"
@@ -74,6 +82,18 @@ class WhiteNoiseService : Service() {
         // 0.0f = Blue, 0.25f = White, 0.5f = Pink (Default), 0.75f = Brown, 1.0f = Deep Red
         private val _noiseColorState = MutableStateFlow(0.5f)
         val noiseColorState: StateFlow<Float> = _noiseColorState.asStateFlow()
+
+        private val _isOscillationEnabledState = MutableStateFlow(false)
+        val isOscillationEnabledState: StateFlow<Boolean> = _isOscillationEnabledState.asStateFlow()
+
+        private val _oscillationMinState = MutableStateFlow(0.20f)
+        val oscillationMinState: StateFlow<Float> = _oscillationMinState.asStateFlow()
+
+        private val _oscillationMaxState = MutableStateFlow(0.80f)
+        val oscillationMaxState: StateFlow<Float> = _oscillationMaxState.asStateFlow()
+
+        private val _oscillationSpeedState = MutableStateFlow(10.0f) // seconds per wave cycle
+        val oscillationSpeedState: StateFlow<Float> = _oscillationSpeedState.asStateFlow()
 
         fun startService(context: Context) {
             val intent = Intent(context, WhiteNoiseService::class.java).apply {
@@ -105,6 +125,31 @@ class WhiteNoiseService : Service() {
             val intent = Intent(context, WhiteNoiseService::class.java).apply {
                 action = ACTION_SET_NOISE_COLOR
                 putExtra(EXTRA_NOISE_COLOR, color)
+            }
+            context.startService(intent)
+        }
+
+        fun setOscillationEnabled(context: Context, enabled: Boolean) {
+            val intent = Intent(context, WhiteNoiseService::class.java).apply {
+                action = ACTION_SET_OSCILLATION_ENABLED
+                putExtra(EXTRA_OSCILLATION_ENABLED, enabled)
+            }
+            context.startService(intent)
+        }
+
+        fun setOscillationRange(context: Context, min: Float, max: Float) {
+            val intent = Intent(context, WhiteNoiseService::class.java).apply {
+                action = ACTION_SET_OSCILLATION_RANGE
+                putExtra(EXTRA_OSCILLATION_MIN, min)
+                putExtra(EXTRA_OSCILLATION_MAX, max)
+            }
+            context.startService(intent)
+        }
+
+        fun setOscillationSpeed(context: Context, speedSeconds: Float) {
+            val intent = Intent(context, WhiteNoiseService::class.java).apply {
+                action = ACTION_SET_OSCILLATION_SPEED
+                putExtra(EXTRA_OSCILLATION_SPEED, speedSeconds)
             }
             context.startService(intent)
         }
@@ -151,6 +196,19 @@ class WhiteNoiseService : Service() {
                 val color = intent.getFloatExtra(EXTRA_NOISE_COLOR, _noiseColorState.value)
                 setNoiseColorInternal(color)
             }
+            ACTION_SET_OSCILLATION_ENABLED -> {
+                val enabled = intent.getBooleanExtra(EXTRA_OSCILLATION_ENABLED, _isOscillationEnabledState.value)
+                setOscillationEnabledInternal(enabled)
+            }
+            ACTION_SET_OSCILLATION_RANGE -> {
+                val min = intent.getFloatExtra(EXTRA_OSCILLATION_MIN, _oscillationMinState.value)
+                val max = intent.getFloatExtra(EXTRA_OSCILLATION_MAX, _oscillationMaxState.value)
+                setOscillationRangeInternal(min, max)
+            }
+            ACTION_SET_OSCILLATION_SPEED -> {
+                val speed = intent.getFloatExtra(EXTRA_OSCILLATION_SPEED, _oscillationSpeedState.value)
+                setOscillationSpeedInternal(speed)
+            }
         }
         return START_STICKY
     }
@@ -158,6 +216,21 @@ class WhiteNoiseService : Service() {
     private fun setNoiseColorInternal(color: Float) {
         _noiseColorState.value = color.coerceIn(0.0f, 1.0f)
         updateNotification()
+    }
+
+    private fun setOscillationEnabledInternal(enabled: Boolean) {
+        _isOscillationEnabledState.value = enabled
+        updateNotification()
+    }
+
+    private fun setOscillationRangeInternal(min: Float, max: Float) {
+        _oscillationMinState.value = min.coerceIn(0.0f, 1.0f)
+        _oscillationMaxState.value = max.coerceIn(0.0f, 1.0f)
+        updateNotification()
+    }
+
+    private fun setOscillationSpeedInternal(speedSeconds: Float) {
+        _oscillationSpeedState.value = speedSeconds.coerceIn(3.0f, 30.0f)
     }
 
     private fun requestAudioFocus() {
@@ -230,10 +303,29 @@ class WhiteNoiseService : Service() {
         playbackJob = serviceScope.launch {
             val pcmBuffer = ShortArray(bufferSize / 2)
             val random = Random()
+            var sampleCounter = 0L
 
             while (_isPlayingState.value && (track.playState == AudioTrack.PLAYSTATE_PLAYING)) {
-                val t = _noiseColorState.value
+                val baseNoiseColor = _noiseColorState.value
+                val isOscillating = _isOscillationEnabledState.value
+                val minColor = _oscillationMinState.value
+                val maxColor = _oscillationMaxState.value
+                val speedSeconds = _oscillationSpeedState.value.coerceAtLeast(1.0f)
+
                 for (i in pcmBuffer.indices) {
+                    sampleCounter++
+
+                    val t = if (isOscillating) {
+                        val timeInSeconds = sampleCounter.toDouble() / sampleRate
+                        val phase = (timeInSeconds * 2.0 * Math.PI) / speedSeconds
+                        val normalizedSine = (kotlin.math.sin(phase).toFloat() + 1.0f) / 2.0f
+                        val low = minOf(minColor, maxColor)
+                        val high = maxOf(minColor, maxColor)
+                        low + normalizedSine * (high - low)
+                    } else {
+                        baseNoiseColor
+                    }
+
                     val whiteSample = random.nextFloat() * 2f - 1f
 
                     val blueSample = generateBlueSample(whiteSample)
@@ -371,7 +463,20 @@ class WhiteNoiseService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val colorName = getNoiseColorName(this, _noiseColorState.value)
+        val title: String
+        val content: String
+
+        if (_isOscillationEnabledState.value) {
+            val minPct = (_oscillationMinState.value * 100).toInt()
+            val maxPct = (_oscillationMaxState.value * 100).toInt()
+            title = "Wave Oscillation ($minPct% - $maxPct%)"
+            content = "Oscillating wave sound playing in background"
+        } else {
+            val colorName = getNoiseColorName(this, _noiseColorState.value)
+            title = colorName
+            content = "$colorName playing in background"
+        }
+
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -393,8 +498,8 @@ class WhiteNoiseService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(colorName)
-            .setContentText("$colorName playing in background")
+            .setContentTitle(title)
+            .setContentText(content)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(contentPendingIntent)
             .setOngoing(true)
